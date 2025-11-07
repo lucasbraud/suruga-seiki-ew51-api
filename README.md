@@ -20,10 +20,9 @@ FastAPI server for controlling Suruga Seiki DA1000/DA1100 probe stations via .NE
 
 ## Installation
 
-```bash
-# Install uv
-pip install uv
+Install uv here : https://docs.astral.sh/uv/getting-started/installation/
 
+```bash
 # Clone repository
 git clone <repo-url>
 cd suruga-seiki-ew51-api
@@ -107,7 +106,3 @@ See `/docs` for full API documentation.
 
 MIT
 
-## Related Projects
-
-- [zero-db](https://github.com/.../zero-db) - Measurement control system
-- [exfo-ctp10-api](https://github.com/.../exfo-ctp10-api) - EXFO vector analyzer API
