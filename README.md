@@ -89,6 +89,18 @@ docker build -t suruga-api .
 docker run -p 8001:8001 suruga-api
 ```
 
+## Examples
+
+The `examples/` directory contains usage examples:
+- `test_flat_alignment.py` - 2D optical alignment demonstration
+- `test_profile_measurement.py` - Profile scanning example
+- `test_angle_adjustment.py` - Angle adjustment example (DA1100 only)
+
+Run examples:
+```bash
+python examples/test_flat_alignment.py
+```
+
 ## API Endpoints
 
 See `/docs` for full API documentation.
