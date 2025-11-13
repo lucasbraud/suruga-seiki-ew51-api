@@ -1437,6 +1437,266 @@ class SurugaSeikiController:
 
     # ========== Optical Alignment ==========
 
+    async def execute_profile_measurement_async(
+        self,
+        request: ProfileMeasurementRequest,
+        cancellation_event: Optional[asyncio.Event] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None,
+    ) -> Optional[ProfileDataResponse]:
+        """
+        Async wrapper for measure_profile that supports cancellation and progress updates.
+
+        Runs the synchronous .NET operations in a thread pool to avoid blocking the event loop.
+        Checks cancellation during polling and emits progress via callback.
+
+        Returns:
+            ProfileDataResponse or None on error
+        """
+
+        def sync_execution() -> Optional[ProfileDataResponse]:
+            # Local import for types
+            if not self.is_connected() or self._profile is None:
+                logger.error("Not connected or Profile not initialized")
+                return None
+
+            # Validate axis number
+            if not self._validate_axis(request.scan_axis):
+                logger.error(f"Invalid scan axis number: {request.scan_axis}")
+                return None
+
+            # Get initial position
+            try:
+                axis = self._axis_components[request.scan_axis]
+                initial_position = axis.GetActualPosition()
+                logger.info(
+                    f"Initial position of axis {request.scan_axis}: {initial_position:.3f} µm"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error getting initial position for axis {request.scan_axis}: {e}"
+                )
+                return None
+
+            try:
+                # Build parameters
+                profile_param = Motion.Profile.ProfileParameter()
+                profile_param.mainAxisNumber = request.scan_axis
+                profile_param.mainRange = request.scan_range
+                profile_param.sub1AxisNumber = request.sub1_axis_number
+                profile_param.sub2AxisNumber = request.sub2_axis_number
+                profile_param.sub1Range = request.sub1_range
+                profile_param.sub2Range = request.sub2_range
+                profile_param.signalCh1Number = request.signal_ch1_number
+                profile_param.signalCh2Number = request.signal_ch2_number
+                profile_param.speed = request.scan_speed
+                profile_param.accelRate = request.accel_rate
+                profile_param.decelRate = request.decel_rate
+                profile_param.smoothing = request.smoothing
+
+                self._profile.SetProfile(profile_param)
+
+                start_error_str = str(self._profile.Start())
+                if start_error_str != "None":
+                    error_info = self._get_profile_error_info(start_error_str)
+                    logger.error(
+                        f"Profile measurement Start() failed: {error_info['error']} "
+                        f"(value={error_info['value']}) - {error_info['description']}"
+                    )
+                    return ProfileDataResponse(
+                        success=False,
+                        main_axis_number=request.scan_axis,
+                        main_axis_initial_position=initial_position,
+                        signal_ch_number=request.signal_ch1_number,
+                        scan_range=request.scan_range,
+                        scan_speed=request.scan_speed,
+                        error_code=error_info['error'],
+                        error_value=error_info['value'],
+                        error_description=error_info['description'],
+                    )
+
+                logger.info(
+                    f"Started profile measurement on axis {request.scan_axis} over {request.scan_range} µm"
+                )
+
+                # Emit initial progress
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "phase": "Starting",
+                            "message": "Profile measurement started",
+                        }
+                    )
+
+                # Poll for completion with optional cancellation
+                poll_interval = 0.1
+                start_wait_time = time.time()
+                timeout = 120
+                last_status = None
+
+                while True:
+                    # Cancellation
+                    if cancellation_event and cancellation_event.is_set():
+                        logger.info("Profile measurement cancellation requested")
+                        try:
+                            # Best-effort stop if API supports it
+                            if hasattr(self._profile, "Stop"):
+                                self._profile.Stop()
+                        except Exception as e:
+                            logger.warning(f"Error calling Profile.Stop(): {e}")
+
+                        # Short wait for motion halt
+                        time.sleep(0.5)
+
+                        return ProfileDataResponse(
+                            success=False,
+                            main_axis_number=request.scan_axis,
+                            main_axis_initial_position=initial_position,
+                            signal_ch_number=request.scan_ch1 if hasattr(request, 'scan_ch1') else request.signal_ch1_number,
+                            scan_range=request.scan_range,
+                            scan_speed=request.scan_speed,
+                            status_code="Cancelled",
+                            status_value=-2,
+                            status_description="Operation cancelled by user",
+                        )
+
+                    status_str = str(self._profile.GetProfileStatus())
+                    status_info = self._get_profile_status_info(status_str)
+
+                    # Broadcast status changes
+                    if progress_callback and status_str != last_status:
+                        last_status = status_str
+                        progress_callback(
+                            {
+                                "phase": status_info["status"],
+                                "phase_description": status_info["description"],
+                                "elapsed_time": time.time() - start_wait_time,
+                            }
+                        )
+
+                    if status_str == "Success":
+                        # Settling time
+                        time.sleep(0.2)
+
+                        packet_sum_index = self._profile.GetProfilePacketSumIndex()
+                        logger.info(
+                            f"Profile measurement completed: {packet_sum_index} packet(s)"
+                        )
+
+                        all_main_positions: List[float] = []
+                        all_signals_ch1: List[float] = []
+
+                        # Collect packets
+                        for packet_number in range(1, packet_sum_index + 1):
+                            packet = self._profile.RequestProfileData(packet_number, False)
+                            all_main_positions.extend(list(packet.mainPositionList))
+                            all_signals_ch1.extend(list(packet.signalCh1List))
+
+                        total_points = len(all_main_positions)
+                        if total_points == 0:
+                            logger.error("No profile data points retrieved")
+                            return None
+
+                        profile_data_tuples = list(zip(all_main_positions, all_signals_ch1))
+                        peak_index, peak_position, peak_value = self._find_peak(
+                            profile_data_tuples
+                        )
+
+                        data_points = [
+                            ProfileDataPoint(position=pos, signal=sig)
+                            for pos, sig in profile_data_tuples
+                        ]
+
+                        try:
+                            final_position = axis.GetActualPosition()
+                        except Exception:
+                            final_position = initial_position
+
+                        return ProfileDataResponse(
+                            success=True,
+                            data_points=data_points,
+                            total_points=total_points,
+                            peak_position=peak_position,
+                            peak_value=peak_value,
+                            peak_index=peak_index,
+                            main_axis_number=request.scan_axis,
+                            main_axis_initial_position=initial_position,
+                            main_axis_final_position=final_position,
+                            signal_ch_number=request.signal_ch1_number,
+                            scan_range=request.scan_range,
+                            scan_speed=request.scan_speed,
+                        )
+
+                    elif status_str in [
+                        "InvalidParameter",
+                        "ServosNotReady",
+                        "ServosAlarm",
+                        "StageOnLimit",
+                        "TorqueLimit",
+                        "ProfileDataOver",
+                    ]:
+                        logger.error(
+                            f"Profile measurement failed: {status_info['status']} "
+                            f"(value={status_info['value']}) - {status_info['description']}"
+                        )
+                        return ProfileDataResponse(
+                            success=False,
+                            main_axis_number=request.scan_axis,
+                            main_axis_initial_position=initial_position,
+                            signal_ch_number=request.signal_ch1_number,
+                            scan_range=request.scan_range,
+                            scan_speed=request.scan_speed,
+                            status_code=status_info["status"],
+                            status_value=status_info["value"],
+                            status_description=status_info["description"],
+                        )
+
+                    # Timeout
+                    if time.time() - start_wait_time > timeout:
+                        logger.error(f"Profile measurement timed out after {timeout}s")
+                        return ProfileDataResponse(
+                            success=False,
+                            main_axis_number=request.scan_axis,
+                            main_axis_initial_position=initial_position,
+                            signal_ch_number=request.signal_ch1_number,
+                            scan_range=request.scan_range,
+                            scan_speed=request.scan_speed,
+                            status_code="Timeout",
+                            status_value=-1,
+                            status_description=f"Timed out after {timeout} seconds",
+                        )
+
+                    time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error during profile measurement (async): {e}", exc_info=True)
+                return None
+
+        # Run synchronous in thread pool
+        return await asyncio.to_thread(sync_execution)
+
+    def stop_profile_measurement(self) -> bool:
+        """
+        Attempt to stop the currently running profile measurement.
+
+        Returns:
+            True if a stop command was issued successfully
+        """
+        if not self.is_connected() or self._profile is None:
+            logger.error("Not connected or Profile not initialized")
+            return False
+
+        try:
+            if hasattr(self._profile, "Stop"):
+                self._profile.Stop()
+                logger.info("Profile measurement stop command sent")
+                return True
+            else:
+                logger.warning("Profile component does not support Stop()")
+                return False
+        except Exception as e:
+            logger.error(f"Error stopping profile measurement: {e}", exc_info=True)
+            return False
+
     def _get_optical_alignment_status_info(self, status_str: str) -> dict:
         """
         Convert optical alignment status string to detailed status information.

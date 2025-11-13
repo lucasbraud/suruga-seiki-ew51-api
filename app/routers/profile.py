@@ -1,10 +1,20 @@
 """
 Profile measurement endpoints
 """
+import asyncio
 from fastapi import APIRouter, HTTPException, status, Response
 
-from ..models import ProfileMeasurementRequest, ProfileDataResponse, ProfileErrorCode, ProfileMeasurementStatus
+from ..models import (
+    ProfileMeasurementRequest,
+    ProfileDataResponse,
+    ProfileErrorCode,
+    ProfileMeasurementStatus,
+    TaskResponse,
+    TaskStatusResponse,
+)
 from ..dependencies import ControllerDep
+from ..task_manager import task_manager, OperationType
+from ..tasks.profile_task import ProfileMeasurementTaskExecutor
 
 router = APIRouter(prefix="/profile", tags=["Profile Measurement"])
 
@@ -73,3 +83,89 @@ async def measure_profile(
 
     # Success - return 200 OK with measurement data
     return profile_data
+
+
+# ========== Async task-based profile measurement ==========
+
+@router.post("/measure/execute", status_code=status.HTTP_202_ACCEPTED, response_model=TaskResponse)
+async def execute_profile_measurement(
+    request: ProfileMeasurementRequest,
+    controller: ControllerDep,
+):
+    """
+    Execute profile measurement asynchronously as a managed task.
+
+    Returns 202 with task info. Poll status and allow cancellation.
+    """
+    if not controller.is_connected():
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Controller not connected")
+
+    try:
+        task = task_manager.create_task(
+            operation_type=OperationType.PROFILE_MEASUREMENT,
+            request_data={
+                "scan_axis": request.scan_axis,
+                "scan_range": request.scan_range,
+                "scan_speed": request.scan_speed,
+            },
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
+    executor = ProfileMeasurementTaskExecutor(task_manager=task_manager)
+    asyncio.create_task(executor.execute(task.task_id, request, controller))
+
+    return TaskResponse(
+        task_id=task.task_id,
+        operation_type=task.operation_type.value,
+        status=task.status.value,
+        status_url=f"/profile/status/{task.task_id}",
+        message=f"Profile measurement task created on axis {request.scan_axis}",
+    )
+
+
+@router.get("/status/{task_id}", response_model=TaskStatusResponse)
+async def get_profile_measurement_status(task_id: str):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task {task_id} not found")
+
+    return TaskStatusResponse(
+        task_id=task.task_id,
+        operation_type=task.operation_type.value,
+        status=task.status.value,
+        progress=task.progress,
+        result=task.result,
+        error=task.error,
+        created_at=task.created_at.isoformat() if task.created_at else None,
+        started_at=task.started_at.isoformat() if task.started_at else None,
+        completed_at=task.completed_at.isoformat() if task.completed_at else None,
+    )
+
+
+@router.post("/stop/{task_id}")
+async def stop_profile_measurement_task(task_id: str, controller: ControllerDep):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task {task_id} not found")
+
+    if task.status.value not in ["pending", "running"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Task {task_id} is {task.status.value} and cannot be cancelled",
+        )
+
+    try:
+        task_manager.cancel_task(task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    # Issue hardware stop as well (best-effort)
+    controller.stop_profile_measurement()
+
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": task.status.value,
+        "message": "Cancellation requested, profile measurement stopping",
+    }
