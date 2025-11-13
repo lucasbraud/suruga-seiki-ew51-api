@@ -2,10 +2,11 @@
 Comprehensive Suruga Seiki DA1000/DA1100 Controller Manager
 Wraps the full .NET API for Python integration with proper error handling and type safety
 """
+import asyncio
 import logging
 import threading
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, Callable
 from enum import Enum
 import time
 
@@ -428,7 +429,7 @@ class SurugaSeikiController:
         logger.info(f"All axes ready: {axis_numbers}")
         return True
 
-    def move_absolute(self, axis_number: int, position: float, speed: float = 1000.0) -> bool:
+    def move_absolute(self, axis_number: int, position: float, speed: float = 50.0) -> bool:
         """
         Move axis to absolute position and wait for completion.
 
@@ -547,6 +548,315 @@ class SurugaSeikiController:
         except Exception as e:
             logger.error(f"Error stopping axis {axis_number}: {e}")
             return False
+
+    async def move_absolute_async(
+        self,
+        axis_number: int,
+        position: float,
+        speed: float = 100.0,
+        cancellation_event: Optional[asyncio.Event] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None
+    ) -> dict[str, Any]:
+        """
+        Async wrapper for move_absolute with cancellation and progress support.
+
+        Args:
+            axis_number: Axis number (1-12)
+            position: Target position in micrometers
+            speed: Movement speed in um/s
+            cancellation_event: Optional event to signal cancellation
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Dictionary with movement result information
+
+        Raises:
+            Exception: If movement fails or is cancelled
+        """
+        def sync_execution():
+            """Synchronous execution in thread pool."""
+            if not self._validate_axis(axis_number):
+                raise Exception(f"Invalid axis number: {axis_number}")
+
+            try:
+                axis = self._axis_components[axis_number]
+
+                # Check if servo is ON before attempting movement
+                try:
+                    is_servo_on = bool(axis.IsServoOn())
+                    if not is_servo_on:
+                        raise Exception(
+                            f"Servo is OFF for axis {axis_number}. "
+                            f"Enable servo using POST /servo/on with axis_id={axis_number} before moving."
+                        )
+                except Exception as e:
+                    if "Servo is OFF" in str(e):
+                        raise  # Re-raise our custom message
+                    # If we can't check servo status, log warning but continue
+                    logger.warning(f"Could not verify servo status for axis {axis_number}: {e}")
+
+                # Get initial position
+                try:
+                    initial_position = float(axis.GetActualPosition())
+                except Exception:
+                    initial_position = None
+
+                # Start movement
+                axis.SetMaxSpeed(speed)
+                axis.MoveAbsolute(position)
+                logger.info(f"Axis {axis_number} moving to {position} um at {speed} um/s")
+
+                if progress_callback:
+                    progress_callback({
+                        "axis": axis_number,
+                        "target_position": position,
+                        "current_position": initial_position,
+                        "speed": speed,
+                        "message": f"Movement started to {position} um"
+                    })
+
+                time.sleep(0.1)  # Initial delay
+                timeout = 60
+                start_time = time.time()
+
+                while True:
+                    # Check cancellation FIRST
+                    if cancellation_event and cancellation_event.is_set():
+                        logger.info(f"Axis {axis_number} movement cancellation requested")
+                        axis.Stop()
+                        time.sleep(0.2)  # Wait for stop
+
+                        raise Exception("Movement cancelled by user")
+
+                    # Check if still moving
+                    try:
+                        is_moving = bool(axis.IsMoving())
+                    except Exception:
+                        try:
+                            is_moving = str(axis.GetStatus()).lower() == "moving"
+                        except Exception:
+                            is_moving = False
+
+                    # Get current position for progress
+                    try:
+                        current_position = float(axis.GetActualPosition())
+                    except Exception:
+                        current_position = None
+
+                    # Calculate progress
+                    if initial_position is not None and current_position is not None:
+                        total_distance = abs(position - initial_position)
+                        traveled = abs(current_position - initial_position)
+                        progress_percent = min(100, int((traveled / total_distance * 100) if total_distance > 0 else 100))
+
+                        if progress_callback:
+                            progress_callback({
+                                "axis": axis_number,
+                                "target_position": position,
+                                "current_position": current_position,
+                                "progress_percent": progress_percent,
+                                "elapsed_time": time.time() - start_time
+                            })
+
+                    if not is_moving:
+                        # Settling time: allow encoder to stabilize after motion stops
+                        time.sleep(0.5)
+
+                        # Re-read position after settling
+                        try:
+                            current_position = float(axis.GetActualPosition())
+                        except Exception:
+                            pass
+
+                        elapsed = time.time() - start_time
+                        logger.info(f"Axis {axis_number} movement completed in {elapsed:.2f}s")
+
+                        if progress_callback:
+                            progress_callback({
+                                "axis": axis_number,
+                                "current_position": current_position,
+                                "progress_percent": 100,
+                                "elapsed_time": elapsed,
+                                "message": "Movement completed"
+                            })
+
+                        return {
+                            "success": True,
+                            "axis": axis_number,
+                            "target_position": position,
+                            "final_position": current_position,
+                            "initial_position": initial_position,
+                            "execution_time": elapsed
+                        }
+
+                    if time.time() - start_time > timeout:
+                        axis.Stop()
+                        raise Exception(f"Movement timed out after {timeout}s")
+
+                    time.sleep(0.05)
+
+            except Exception as e:
+                logger.error(f"Error in axis {axis_number} absolute movement: {e}")
+                raise
+
+        return await asyncio.to_thread(sync_execution)
+
+    async def move_relative_async(
+        self,
+        axis_number: int,
+        distance: float,
+        speed: float = 1000.0,
+        cancellation_event: Optional[asyncio.Event] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None
+    ) -> dict[str, Any]:
+        """
+        Async wrapper for move_relative with cancellation and progress support.
+
+        Args:
+            axis_number: Axis number (1-12)
+            distance: Relative distance in micrometers
+            speed: Movement speed in um/s
+            cancellation_event: Optional event to signal cancellation
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Dictionary with movement result information
+
+        Raises:
+            Exception: If movement fails or is cancelled
+        """
+        def sync_execution():
+            """Synchronous execution in thread pool."""
+            if not self._validate_axis(axis_number):
+                raise Exception(f"Invalid axis number: {axis_number}")
+
+            try:
+                axis = self._axis_components[axis_number]
+
+                # Check if servo is ON before attempting movement
+                try:
+                    is_servo_on = bool(axis.IsServoOn())
+                    if not is_servo_on:
+                        raise Exception(
+                            f"Servo is OFF for axis {axis_number}. "
+                            f"Enable servo using POST /servo/on with axis_id={axis_number} before moving."
+                        )
+                except Exception as e:
+                    if "Servo is OFF" in str(e):
+                        raise  # Re-raise our custom message
+                    # If we can't check servo status, log warning but continue
+                    logger.warning(f"Could not verify servo status for axis {axis_number}: {e}")
+
+                # Get initial position
+                try:
+                    initial_position = float(axis.GetActualPosition())
+                    target_position = initial_position + distance
+                except Exception:
+                    initial_position = None
+                    target_position = None
+
+                # Start movement
+                axis.SetMaxSpeed(speed)
+                axis.MoveRelative(distance)
+                logger.info(f"Axis {axis_number} moving relative {distance} um at {speed} um/s")
+
+                if progress_callback:
+                    progress_callback({
+                        "axis": axis_number,
+                        "distance": distance,
+                        "initial_position": initial_position,
+                        "target_position": target_position,
+                        "speed": speed,
+                        "message": f"Relative movement started: {distance:+.2f} um"
+                    })
+
+                time.sleep(0.1)  # Initial delay
+                timeout = 60
+                start_time = time.time()
+
+                while True:
+                    # Check cancellation FIRST
+                    if cancellation_event and cancellation_event.is_set():
+                        logger.info(f"Axis {axis_number} movement cancellation requested")
+                        axis.Stop()
+                        time.sleep(0.2)  # Wait for stop
+
+                        raise Exception("Movement cancelled by user")
+
+                    # Check if still moving
+                    try:
+                        is_moving = bool(axis.IsMoving())
+                    except Exception:
+                        try:
+                            is_moving = str(axis.GetStatus()).lower() == "moving"
+                        except Exception:
+                            is_moving = False
+
+                    # Get current position for progress
+                    try:
+                        current_position = float(axis.GetActualPosition())
+                    except Exception:
+                        current_position = None
+
+                    # Calculate progress
+                    if initial_position is not None and current_position is not None and target_position is not None:
+                        total_distance = abs(distance)
+                        traveled = abs(current_position - initial_position)
+                        progress_percent = min(100, int((traveled / total_distance * 100) if total_distance > 0 else 100))
+
+                        if progress_callback:
+                            progress_callback({
+                                "axis": axis_number,
+                                "distance": distance,
+                                "current_position": current_position,
+                                "target_position": target_position,
+                                "progress_percent": progress_percent,
+                                "elapsed_time": time.time() - start_time
+                            })
+
+                    if not is_moving:
+                        # Settling time: allow encoder to stabilize after motion stops
+                        time.sleep(0.5)
+
+                        # Re-read position after settling
+                        try:
+                            current_position = float(axis.GetActualPosition())
+                        except Exception:
+                            pass
+
+                        elapsed = time.time() - start_time
+                        logger.info(f"Axis {axis_number} relative movement completed in {elapsed:.2f}s")
+
+                        if progress_callback:
+                            progress_callback({
+                                "axis": axis_number,
+                                "current_position": current_position,
+                                "progress_percent": 100,
+                                "elapsed_time": elapsed,
+                                "message": "Movement completed"
+                            })
+
+                        return {
+                            "success": True,
+                            "axis": axis_number,
+                            "distance": distance,
+                            "initial_position": initial_position,
+                            "final_position": current_position,
+                            "target_position": target_position,
+                            "execution_time": elapsed
+                        }
+
+                    if time.time() - start_time > timeout:
+                        axis.Stop()
+                        raise Exception(f"Movement timed out after {timeout}s")
+
+                    time.sleep(0.05)
+
+            except Exception as e:
+                logger.error(f"Error in axis {axis_number} relative movement: {e}")
+                raise
+
+        return await asyncio.to_thread(sync_execution)
 
     def get_position(self, axis_number: int) -> Optional[AxisStatus]:
         """
@@ -2065,6 +2375,722 @@ class SurugaSeikiController:
         except Exception as e:
             logger.error(f"Error stopping {stage_name} angle adjustment: {e}", exc_info=True)
             return False
+
+    async def execute_angle_adjustment_async(
+        self,
+        request: AngleAdjustmentRequest,
+        cancellation_event: Optional[asyncio.Event] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None
+    ) -> Optional[AngleAdjustmentResponse]:
+        """
+        Async wrapper for execute_angle_adjustment that supports cancellation and progress updates.
+
+        Runs the synchronous .NET operations in a thread pool to avoid blocking the event loop.
+        Checks cancellation event during polling and emits progress updates via callback.
+
+        Args:
+            request: AngleAdjustmentRequest with stage selection and parameters
+            cancellation_event: Optional asyncio.Event to signal cancellation
+            progress_callback: Optional callback for progress updates (called from thread pool)
+
+        Returns:
+            AngleAdjustmentResponse or None if cancelled/error
+        """
+        def sync_execution():
+            """Synchronous execution function to run in thread pool."""
+            stage_name = request.stage.name
+
+            # Select the correct angle adjustment object
+            if request.stage == AngleAdjustmentStage.LEFT:
+                angle_adjustment = self._angle_adjustment_left
+            else:
+                angle_adjustment = self._angle_adjustment_right
+
+            # Check connection
+            if not self.is_connected() or angle_adjustment is None:
+                logger.error(f"Not connected or {stage_name} AngleAdjustment not initialized")
+                return None
+
+            try:
+                start_time = time.time()
+
+                # Auto-determine stage-specific hardware parameters
+                if request.stage == AngleAdjustmentStage.LEFT:
+                    signal_ch_number = 5
+                    unlock_dout_ch_number = 1
+                    contact_axis_number = 3
+                    rotation_center_x = 1
+                    rotation_center_y = 2
+                    rotation_center_z = 3
+                else:  # RIGHT
+                    signal_ch_number = 6
+                    unlock_dout_ch_number = 2
+                    contact_axis_number = 9
+                    rotation_center_x = 7
+                    rotation_center_y = 8
+                    rotation_center_z = 9
+
+                # Configure parameters (same as sync version)
+                params = Motion.AngleAdjustment.AngleAdjustmentParameter()
+                params.gap = request.gap
+                params.signalChNumber = signal_ch_number
+                params.signalLowerLimit = request.signal_lower_limit
+                params.unlockDOutChNumber = unlock_dout_ch_number
+                params.unlockDOutControlOn = request.unlock_dout_control_on
+                params.contactAxisNumber = contact_axis_number
+                params.contactSearchRange = request.contact_search_range
+                params.contactSearchSpeed = request.contact_search_speed
+                params.contactSmoothing = request.contact_smoothing
+                params.contactSensitivity = request.contact_sensitivity
+                params.pushDistance = request.push_distance
+                params.angleAxisNumberTx = request.angle_axis_number_tx
+                params.angleAxisNumberTy = request.angle_axis_number_ty
+                params.angleSearchRangeTx = request.angle_search_range_tx
+                params.angleSearchRangeTy = request.angle_search_range_ty
+                params.angleSearchSpeedTx = request.angle_search_speed_tx
+                params.angleSearchSpeedTy = request.angle_search_speed_ty
+                params.angleSmoothingTx = request.angle_smoothing_tx
+                params.angleSmoothingTy = request.angle_smoothing_ty
+                params.angleSensitivityTx = request.angle_sensitivity_tx
+                params.angleSensitivityTy = request.angle_sensitivity_ty
+                params.angleJudgeCountTx = request.angle_judge_count_tx
+                params.angleJudgeCountTy = request.angle_judge_count_ty
+                params.angleConvergentRangeTx = request.angle_convergent_range_tx
+                params.angleConvergentRangeTy = request.angle_convergent_range_ty
+                params.angleComparisonCount = request.angle_comparison_count
+                params.angleMaxCount = request.angle_max_count
+
+                rotation_center = Motion.Axis3D.RotationCenter()
+                rotation_center.enabled = request.rotation_center_enabled
+                rotation_center.mainStageNumberX = rotation_center_x
+                rotation_center.mainStageNumberY = rotation_center_y
+                rotation_center.mainStageNumberZ = rotation_center_z
+
+                logger.info(f"{stage_name} angle adjustment async execution starting")
+
+                # Apply parameters
+                angle_adjustment.SetParameter(params, rotation_center)
+                time.sleep(0.2)
+
+                # Safety check
+                digital_output_state = self.get_digital_output(unlock_dout_ch_number)
+                if digital_output_state is None or digital_output_state:
+                    error_msg = "Contact sensor is locked or state could not be read"
+                    logger.error(f"{stage_name}: {error_msg}")
+                    return AngleAdjustmentResponse(
+                        success=False,
+                        status_code="InvalidParameter",
+                        status_value=4,
+                        status_description=error_msg,
+                        error_message=f"{stage_name} stage contact sensor must be UNLOCKED"
+                    )
+
+                # Measure initial signal
+                initial_signal = self.get_analog_input(signal_ch_number)
+                if initial_signal is not None:
+                    logger.info(f"Initial signal: {initial_signal:.6f} V")
+
+                # Start adjustment
+                angle_adjustment.Start()
+                time.sleep(0.2)
+                logger.info(f"{stage_name} angle adjustment started")
+
+                # Emit initial progress
+                if progress_callback:
+                    progress_callback({
+                        "phase": "Starting",
+                        "elapsed_time": 0,
+                        "message": f"{stage_name} angle adjustment started"
+                    })
+
+                # Wait for completion with cancellation support
+                timeout = 60
+                poll_interval = 0.1
+                start_wait_time = time.time()
+                last_phase = None
+                last_status = None
+
+                while True:
+                    # Check cancellation FIRST
+                    if cancellation_event and cancellation_event.is_set():
+                        logger.info(f"{stage_name} angle adjustment cancellation requested")
+                        angle_adjustment.Stop()
+
+                        # Wait briefly for stop to take effect
+                        time.sleep(0.5)
+
+                        return AngleAdjustmentResponse(
+                            success=False,
+                            status_code="Cancelled",
+                            status_value=-2,
+                            status_description="Operation cancelled by user",
+                            execution_time=time.time() - start_time,
+                            error_message="Angle adjustment was cancelled"
+                        )
+
+                    status_str = str(angle_adjustment.GetStatus())
+                    phase_str = str(angle_adjustment.GetAdjustingStatus())
+                    elapsed_time = time.time() - start_wait_time
+
+                    # Emit progress on phase changes
+                    if phase_str != last_phase:
+                        phase_info = self._get_adjusting_status_info(phase_str)
+                        logger.info(f"{stage_name} phase: {phase_info['phase']}")
+                        last_phase = phase_str
+
+                        if progress_callback:
+                            progress_callback({
+                                "phase": phase_info['phase'],
+                                "phase_description": phase_info['description'],
+                                "elapsed_time": elapsed_time,
+                                "progress_percent": self._calculate_angle_adjustment_progress(phase_str),
+                                "message": f"Phase: {phase_info['phase']}"
+                            })
+
+                    # Check if adjustment finished
+                    if status_str != "Adjusting":
+                        if status_str == "Success":
+                            time.sleep(0.2)  # Settling time
+                            execution_time = time.time() - start_time
+                            status_info = self._get_angle_adjustment_status_info(status_str)
+                            phase_info = self._get_adjusting_status_info(phase_str)
+
+                            final_signal = self.get_analog_input(signal_ch_number)
+                            signal_improvement = None
+                            if final_signal is not None and initial_signal is not None:
+                                signal_improvement = final_signal - initial_signal
+                                logger.info(f"{stage_name} SUCCESS - Improvement: {signal_improvement:+.6f} V")
+
+                            # Retrieve profile data
+                            contact_z_profile = self._retrieve_angle_adjustment_profile_data(
+                                angle_adjustment,
+                                Motion.AngleAdjustment.ProfileDataType.ContactZ
+                            )
+                            adjusting_tx_profile = self._retrieve_angle_adjustment_profile_data(
+                                angle_adjustment,
+                                Motion.AngleAdjustment.ProfileDataType.AdjustmentTx
+                            )
+                            adjusting_ty_profile = self._retrieve_angle_adjustment_profile_data(
+                                angle_adjustment,
+                                Motion.AngleAdjustment.ProfileDataType.AdjustmentTy
+                            )
+
+                            if progress_callback:
+                                progress_callback({
+                                    "phase": "Completed",
+                                    "elapsed_time": execution_time,
+                                    "progress_percent": 100,
+                                    "message": "Angle adjustment completed successfully"
+                                })
+
+                            return AngleAdjustmentResponse(
+                                success=True,
+                                status_code=status_info['status'],
+                                status_value=status_info['value'],
+                                status_description=status_info['description'],
+                                phase_code=phase_info['phase'],
+                                phase_value=phase_info['value'],
+                                phase_description=phase_info['description'],
+                                initial_signal=initial_signal,
+                                final_signal=final_signal,
+                                signal_improvement=signal_improvement,
+                                execution_time=execution_time,
+                                contact_z_profile=contact_z_profile,
+                                adjusting_tx_profile=adjusting_tx_profile,
+                                adjusting_ty_profile=adjusting_ty_profile
+                            )
+                        else:
+                            # Error status
+                            execution_time = time.time() - start_time
+                            status_info = self._get_angle_adjustment_status_info(status_str)
+                            phase_info = self._get_adjusting_status_info(phase_str)
+
+                            logger.error(f"{stage_name} failed: {status_info['status']}")
+
+                            if progress_callback:
+                                progress_callback({
+                                    "phase": "Failed",
+                                    "elapsed_time": execution_time,
+                                    "message": f"Failed: {status_info['status']}"
+                                })
+
+                            return AngleAdjustmentResponse(
+                                success=False,
+                                status_code=status_info['status'],
+                                status_value=status_info['value'],
+                                status_description=status_info['description'],
+                                phase_code=phase_info['phase'],
+                                phase_value=phase_info['value'],
+                                phase_description=phase_info['description'],
+                                execution_time=execution_time,
+                                error_message=f"{status_info['status']}: {status_info['description']}"
+                            )
+
+                    # Check timeout
+                    if time.time() - start_wait_time > timeout:
+                        execution_time = time.time() - start_time
+                        logger.error(f"{stage_name} timed out after {timeout}s")
+
+                        if progress_callback:
+                            progress_callback({
+                                "phase": "Timeout",
+                                "elapsed_time": execution_time,
+                                "message": "Operation timed out"
+                            })
+
+                        return AngleAdjustmentResponse(
+                            success=False,
+                            status_code="Timeout",
+                            status_value=-1,
+                            status_description=f"Timed out after {timeout} seconds",
+                            execution_time=execution_time,
+                            error_message="Operation timed out"
+                        )
+
+                    time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error during {stage_name} angle adjustment: {e}", exc_info=True)
+                if progress_callback:
+                    progress_callback({
+                        "phase": "Error",
+                        "message": f"Exception: {str(e)}"
+                    })
+                return None
+
+        # Run synchronous function in thread pool
+        return await asyncio.to_thread(sync_execution)
+
+    # ========== Optical Alignment (Async with Cancellation Support) ==========
+
+    def stop_alignment(self) -> bool:
+        """
+        Stop currently running optical alignment operation.
+
+        Returns:
+            True if stop command was sent successfully
+        """
+        if not self.is_connected() or self._alignment is None:
+            logger.error("Not connected or Alignment not initialized")
+            return False
+
+        try:
+            self._alignment.Stop()
+            logger.info("Alignment stop command sent")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to stop alignment: {e}")
+            return False
+
+    async def execute_flat_alignment_async(
+        self,
+        request,
+        cancellation_event: Optional[asyncio.Event] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None
+    ):
+        """
+        Async wrapper for execute_flat_alignment with cancellation and progress support.
+
+        Args:
+            request: FlatAlignmentRequest with all parameters
+            cancellation_event: Optional event to signal cancellation
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            AlignmentResponse or None if error
+
+        Raises:
+            Exception: If alignment fails or is cancelled
+        """
+        def sync_execution():
+            """Synchronous execution in thread pool."""
+            from .models import AlignmentResponse
+
+            if not self.is_connected() or self._alignment is None:
+                raise Exception("Not connected or Alignment not initialized")
+
+            try:
+                start_time = time.time()
+
+                # Create FlatParameter structure
+                flat_params = Motion.Alignment.FlatParameter()
+
+                # Set all ~30 parameters from request
+                flat_params.mainStageNumberX = request.mainStageNumberX
+                flat_params.mainStageNumberY = request.mainStageNumberY
+                flat_params.subStageNumberXY = request.subStageNumberXY
+                flat_params.subAngleX = request.subAngleX
+                flat_params.subAngleY = request.subAngleY
+
+                flat_params.pmCh = request.pmCh
+                flat_params.analogCh = request.analogCh
+                flat_params.wavelength = request.wavelength
+                flat_params.pmAutoRangeUpOn = request.pmAutoRangeUpOn
+                flat_params.pmInitRangeSettingOn = request.pmInitRangeSettingOn
+                flat_params.pmInitRange = request.pmInitRange
+
+                flat_params.fieldSearchThreshold = request.fieldSearchThreshold
+                flat_params.peakSearchThreshold = request.peakSearchThreshold
+
+                flat_params.searchRangeX = request.searchRangeX
+                flat_params.searchRangeY = request.searchRangeY
+
+                flat_params.fieldSearchPitchX = request.fieldSearchPitchX
+                flat_params.fieldSearchPitchY = request.fieldSearchPitchY
+                flat_params.fieldSearchFirstPitchX = request.fieldSearchFirstPitchX
+                flat_params.fieldSearchSpeedX = request.fieldSearchSpeedX
+                flat_params.fieldSearchSpeedY = request.fieldSearchSpeedY
+
+                flat_params.peakSearchSpeedX = request.peakSearchSpeedX
+                flat_params.peakSearchSpeedY = request.peakSearchSpeedY
+
+                flat_params.smoothingRangeX = request.smoothingRangeX
+                flat_params.smoothingRangeY = request.smoothingRangeY
+
+                flat_params.centroidThresholdX = request.centroidThresholdX
+                flat_params.centroidThresholdY = request.centroidThresholdY
+
+                flat_params.convergentRangeX = request.convergentRangeX
+                flat_params.convergentRangeY = request.convergentRangeY
+                flat_params.comparisonCount = request.comparisonCount
+                flat_params.maxRepeatCount = request.maxRepeatCount
+
+                # Apply parameters to alignment hardware
+                self._alignment.SetFlat(flat_params)
+                self._alignment.SetMeasurementWaveLength(request.pmCh, request.wavelength)
+
+                # Measure initial optical power
+                initial_power = float(self._alignment.GetPower(request.pmCh))
+                logger.info(f"Flat alignment starting - Initial power: {initial_power:.3f} dBm")
+
+                if progress_callback:
+                    progress_callback({
+                        "phase": "Starting",
+                        "initial_power": initial_power,
+                        "message": f"Flat alignment started - Initial power: {initial_power:.3f} dBm"
+                    })
+
+                # Start flat alignment
+                self._alignment.StartFlat()
+                time.sleep(0.1)
+
+                # Poll status until completion
+                last_phase_str = None
+                poll_interval = 0.5
+                timeout = 300  # 5 minutes
+
+                while True:
+                    # Check cancellation FIRST
+                    if cancellation_event and cancellation_event.is_set():
+                        logger.info("Flat alignment cancellation requested")
+                        self._alignment.Stop()
+                        time.sleep(0.5)  # Wait for stop
+                        raise Exception("Alignment cancelled by user")
+
+                    status_str = str(self._alignment.GetStatus())
+                    phase_str = str(self._alignment.GetAligningStatus())
+
+                    # Log and broadcast phase changes
+                    if phase_str != last_phase_str:
+                        phase_info = self._get_aligning_phase_info(phase_str)
+                        logger.info(f"Flat alignment phase: {phase_info['phase']} - {phase_info['description']}")
+
+                        if progress_callback:
+                            progress_callback({
+                                "phase": phase_info['phase'],
+                                "phase_description": phase_info['description'],
+                                "elapsed_time": time.time() - start_time,
+                                "message": f"Phase: {phase_info['description']}"
+                            })
+
+                        last_phase_str = phase_str
+
+                    # Check if completed
+                    if status_str != "Aligning":
+                        status_info = self._get_optical_alignment_status_info(status_str)
+                        phase_info = self._get_aligning_phase_info(phase_str)
+                        execution_time = time.time() - start_time
+
+                        if status_str == "Success":
+                            # Settling time
+                            time.sleep(0.2)
+
+                            # Measure final optical power
+                            final_power = float(self._alignment.GetPower(request.pmCh))
+                            power_improvement = final_power - initial_power
+
+                            logger.info(f"Flat alignment SUCCESS - Final power: {final_power:.3f} dBm, "
+                                      f"Improvement: {power_improvement:+.3f} dB, Time: {execution_time:.2f}s")
+
+                            # Retrieve profile data
+                            field_search_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.FieldSearch
+                            )
+                            peak_search_x_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.PeakSearchX
+                            )
+                            peak_search_y_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.PeakSearchY
+                            )
+
+                            # Get peak positions
+                            peak_x = float(self._axis_components[request.mainStageNumberX].GetActualPosition())
+                            peak_y = float(self._axis_components[request.mainStageNumberY].GetActualPosition())
+
+                            return AlignmentResponse(
+                                success=True,
+                                status_code=status_info['status'],
+                                status_value=status_info['value'],
+                                status_description=status_info['description'],
+                                phase_code=phase_info['phase'],
+                                phase_value=phase_info['value'],
+                                phase_description=phase_info['description'],
+                                initial_power=initial_power,
+                                final_power=final_power,
+                                power_improvement=power_improvement,
+                                peak_position_x=peak_x,
+                                peak_position_y=peak_y,
+                                execution_time=execution_time,
+                                field_search_profile=field_search_profile,
+                                peak_search_x_profile=peak_search_x_profile,
+                                peak_search_y_profile=peak_search_y_profile
+                            )
+                        else:
+                            # Alignment failed
+                            logger.error(f"Flat alignment FAILED - Status: {status_info['status']} - "
+                                       f"{status_info['description']}, Time: {execution_time:.2f}s")
+
+                            raise Exception(f"Flat alignment failed: {status_info['description']}")
+
+                    # Check timeout
+                    if time.time() - start_time > timeout:
+                        self._alignment.Stop()
+                        raise Exception(f"Flat alignment timed out after {timeout}s")
+
+                    time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error during flat alignment: {e}", exc_info=True)
+                raise
+
+        # Run synchronous function in thread pool
+        return await asyncio.to_thread(sync_execution)
+
+    async def execute_focus_alignment_async(
+        self,
+        request,
+        cancellation_event: Optional[asyncio.Event] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None
+    ):
+        """
+        Async wrapper for execute_focus_alignment with cancellation and progress support.
+
+        Args:
+            request: FocusAlignmentRequest with all parameters
+            cancellation_event: Optional event to signal cancellation
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            AlignmentResponse or None if error
+
+        Raises:
+            Exception: If alignment fails or is cancelled
+        """
+        def sync_execution():
+            """Synchronous execution in thread pool."""
+            from .models import AlignmentResponse
+
+            if not self.is_connected() or self._alignment is None:
+                raise Exception("Not connected or Alignment not initialized")
+
+            try:
+                start_time = time.time()
+
+                # Create FocusParameter structure
+                focus_params = Motion.Alignment.FocusParameter()
+
+                # Set zMode (specific to Focus alignment)
+                focus_params.zMode = request.zMode
+
+                # Set all ~30 parameters from request
+                focus_params.mainStageNumberX = request.mainStageNumberX
+                focus_params.mainStageNumberY = request.mainStageNumberY
+                focus_params.subStageNumberXY = request.subStageNumberXY
+                focus_params.subAngleX = request.subAngleX
+                focus_params.subAngleY = request.subAngleY
+
+                focus_params.pmCh = request.pmCh
+                focus_params.analogCh = request.analogCh
+                focus_params.wavelength = request.wavelength
+                focus_params.pmAutoRangeUpOn = request.pmAutoRangeUpOn
+                focus_params.pmInitRangeSettingOn = request.pmInitRangeSettingOn
+                focus_params.pmInitRange = request.pmInitRange
+
+                focus_params.fieldSearchThreshold = request.fieldSearchThreshold
+                focus_params.peakSearchThreshold = request.peakSearchThreshold
+
+                focus_params.searchRangeX = request.searchRangeX
+                focus_params.searchRangeY = request.searchRangeY
+
+                focus_params.fieldSearchPitchX = request.fieldSearchPitchX
+                focus_params.fieldSearchPitchY = request.fieldSearchPitchY
+                focus_params.fieldSearchFirstPitchX = request.fieldSearchFirstPitchX
+                focus_params.fieldSearchSpeedX = request.fieldSearchSpeedX
+                focus_params.fieldSearchSpeedY = request.fieldSearchSpeedY
+
+                focus_params.peakSearchSpeedX = request.peakSearchSpeedX
+                focus_params.peakSearchSpeedY = request.peakSearchSpeedY
+
+                focus_params.smoothingRangeX = request.smoothingRangeX
+                focus_params.smoothingRangeY = request.smoothingRangeY
+
+                focus_params.centroidThresholdX = request.centroidThresholdX
+                focus_params.centroidThresholdY = request.centroidThresholdY
+
+                focus_params.convergentRangeX = request.convergentRangeX
+                focus_params.convergentRangeY = request.convergentRangeY
+                focus_params.comparisonCount = request.comparisonCount
+                focus_params.maxRepeatCount = request.maxRepeatCount
+
+                # Apply parameters to alignment hardware
+                self._alignment.SetFocus(focus_params)
+                self._alignment.SetMeasurementWaveLength(request.pmCh, request.wavelength)
+
+                # Measure initial optical power
+                initial_power = float(self._alignment.GetPower(request.pmCh))
+                logger.info(f"Focus alignment starting (zMode={request.zMode}) - Initial power: {initial_power:.3f} dBm")
+
+                if progress_callback:
+                    progress_callback({
+                        "phase": "Starting",
+                        "initial_power": initial_power,
+                        "z_mode": request.zMode,
+                        "message": f"Focus alignment started - Initial power: {initial_power:.3f} dBm"
+                    })
+
+                # Start focus alignment
+                self._alignment.StartFocus()
+                time.sleep(0.1)
+
+                # Poll status until completion
+                last_phase_str = None
+                poll_interval = 0.5
+                timeout = 300  # 5 minutes
+
+                while True:
+                    # Check cancellation FIRST
+                    if cancellation_event and cancellation_event.is_set():
+                        logger.info("Focus alignment cancellation requested")
+                        self._alignment.Stop()
+                        time.sleep(0.5)  # Wait for stop
+                        raise Exception("Alignment cancelled by user")
+
+                    status_str = str(self._alignment.GetStatus())
+                    phase_str = str(self._alignment.GetAligningStatus())
+
+                    # Log and broadcast phase changes
+                    if phase_str != last_phase_str:
+                        phase_info = self._get_aligning_phase_info(phase_str)
+                        logger.info(f"Focus alignment phase: {phase_info['phase']} - {phase_info['description']}")
+
+                        if progress_callback:
+                            progress_callback({
+                                "phase": phase_info['phase'],
+                                "phase_description": phase_info['description'],
+                                "elapsed_time": time.time() - start_time,
+                                "message": f"Phase: {phase_info['description']}"
+                            })
+
+                        last_phase_str = phase_str
+
+                    # Check if completed
+                    if status_str != "Aligning":
+                        status_info = self._get_optical_alignment_status_info(status_str)
+                        phase_info = self._get_aligning_phase_info(phase_str)
+                        execution_time = time.time() - start_time
+
+                        if status_str == "Success":
+                            # Settling time
+                            time.sleep(0.2)
+
+                            # Measure final optical power
+                            final_power = float(self._alignment.GetPower(request.pmCh))
+                            power_improvement = final_power - initial_power
+
+                            logger.info(f"Focus alignment SUCCESS - Final power: {final_power:.3f} dBm, "
+                                      f"Improvement: {power_improvement:+.3f} dB, Time: {execution_time:.2f}s")
+
+                            # Retrieve profile data (including Z-axis)
+                            field_search_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.FieldSearch
+                            )
+                            peak_search_x_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.PeakSearchX
+                            )
+                            peak_search_y_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.PeakSearchY
+                            )
+                            peak_search_z_profile = self._retrieve_alignment_profile_data(
+                                Motion.Alignment.ProfileDataType.PeakSearchZ
+                            )
+
+                            # Get peak positions (X, Y, Z)
+                            peak_x = float(self._axis_components[request.mainStageNumberX].GetActualPosition())
+                            peak_y = float(self._axis_components[request.mainStageNumberY].GetActualPosition())
+                            # Z-axis uses subStageNumberXY (typically axis 3 for Z1)
+                            peak_z = float(self._axis_components[request.subStageNumberXY].GetActualPosition())
+
+                            return AlignmentResponse(
+                                success=True,
+                                status_code=status_info['status'],
+                                status_value=status_info['value'],
+                                status_description=status_info['description'],
+                                phase_code=phase_info['phase'],
+                                phase_value=phase_info['value'],
+                                phase_description=phase_info['description'],
+                                initial_power=initial_power,
+                                final_power=final_power,
+                                power_improvement=power_improvement,
+                                peak_position_x=peak_x,
+                                peak_position_y=peak_y,
+                                peak_position_z=peak_z,
+                                execution_time=execution_time,
+                                field_search_profile=field_search_profile,
+                                peak_search_x_profile=peak_search_x_profile,
+                                peak_search_y_profile=peak_search_y_profile,
+                                peak_search_z_profile=peak_search_z_profile
+                            )
+                        else:
+                            # Alignment failed
+                            logger.error(f"Focus alignment FAILED - Status: {status_info['status']} - "
+                                       f"{status_info['description']}, Time: {execution_time:.2f}s")
+
+                            raise Exception(f"Focus alignment failed: {status_info['description']}")
+
+                    # Check timeout
+                    if time.time() - start_time > timeout:
+                        self._alignment.Stop()
+                        raise Exception(f"Focus alignment timed out after {timeout}s")
+
+                    time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.error(f"Error during focus alignment: {e}", exc_info=True)
+                raise
+
+        # Run synchronous function in thread pool
+        return await asyncio.to_thread(sync_execution)
+
+    def _calculate_angle_adjustment_progress(self, phase_str: str) -> int:
+        """Calculate progress percentage based on adjustment phase."""
+        phase_progress = {
+            "NotAdjusting": 0,
+            "Initializing": 20,
+            "ContactingZ": 40,
+            "AdjustingTx": 60,
+            "AdjustingTy": 80
+        }
+        return phase_progress.get(phase_str, 50)
 
     # ========== Digital and Analog I/O ==========
 

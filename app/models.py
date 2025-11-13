@@ -822,3 +822,55 @@ class StopAngleAdjustmentRequest(BaseModel):
 class DigitalOutputRequest(BaseModel):
     channel: int = Field(ge=1, le=2, description="Digital output channel number (1=Left, 2=Right)")
     value: bool = Field(description="Output value: True for LOCKED, False for UNLOCKED")
+
+
+# ========== Task Management Models ==========
+
+class TaskStatusEnum(str, Enum):
+    """Status of a task."""
+    PENDING = "pending"
+    RUNNING = "running"
+    STOPPING = "stopping"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class OperationTypeEnum(str, Enum):
+    """Types of operations that can be executed as tasks."""
+    ANGLE_ADJUSTMENT = "angle_adjustment"
+    FLAT_ALIGNMENT = "flat_alignment"
+    FOCUS_ALIGNMENT = "focus_alignment"
+    PROFILE_MEASUREMENT = "profile_measurement"
+    AXIS_MOVEMENT = "axis_movement"
+
+
+class TaskResponse(BaseModel):
+    """Response when a task is created (202 Accepted)."""
+    task_id: str = Field(description="Unique task identifier")
+    operation_type: str = Field(description="Type of operation (angle_adjustment, flat_alignment, etc.)")
+    status: str = Field(description="Current task status")
+    status_url: str = Field(description="URL to poll for task status")
+    message: str = Field(default="Task created and execution started", description="Human-readable message")
+
+
+class TaskStatusResponse(BaseModel):
+    """Complete task status information."""
+    task_id: str = Field(description="Unique task identifier")
+    operation_type: str = Field(description="Type of operation")
+    status: str = Field(description="Current task status")
+    progress: dict = Field(default_factory=dict, description="Operation-specific progress data")
+    result: Optional[dict] = Field(default=None, description="Result data when task completes")
+    error: Optional[str] = Field(default=None, description="Error message if task failed")
+    created_at: Optional[str] = Field(default=None, description="ISO timestamp when task was created")
+    started_at: Optional[str] = Field(default=None, description="ISO timestamp when task execution started")
+    completed_at: Optional[str] = Field(default=None, description="ISO timestamp when task finished")
+
+
+class TaskProgressMessage(BaseModel):
+    """WebSocket message for task progress updates."""
+    type: str = Field(default="task_progress", description="Message type")
+    task_id: str = Field(description="Task identifier")
+    operation_type: str = Field(description="Type of operation")
+    status: str = Field(description="Current task status")
+    progress: dict = Field(description="Progress data specific to operation type")
