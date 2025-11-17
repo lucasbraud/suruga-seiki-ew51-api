@@ -1,12 +1,15 @@
 """Optical alignment task executor."""
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from app.controller_manager import SurugaSeikiController
 from app.models import FlatAlignmentRequest, FocusAlignmentRequest
 from app.task_manager import Task
 from app.tasks.base_task import BaseTaskExecutor, OperationCancelledException
+
+if TYPE_CHECKING:
+    from app.controller_manager import SurugaSeikiController
+    from app.mock_controller import MockSurugaSeikiController
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,7 @@ class AlignmentTaskExecutor(BaseTaskExecutor):
     """Task executor for optical alignment operations (flat and focus)."""
 
     async def execute_operation(
-        self, task: Task, request: dict, controller: SurugaSeikiController
+        self, task: Task, request: dict, controller: "SurugaSeikiController | MockSurugaSeikiController"
     ) -> dict[str, Any]:
         """Execute alignment operation (flat or focus).
 

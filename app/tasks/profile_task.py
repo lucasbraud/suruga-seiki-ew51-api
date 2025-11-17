@@ -1,12 +1,15 @@
 """Profile measurement task executor."""
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from app.controller_manager import SurugaSeikiController
 from app.models import ProfileMeasurementRequest
 from app.task_manager import Task
 from app.tasks.base_task import BaseTaskExecutor, OperationCancelledException
+
+if TYPE_CHECKING:
+    from app.controller_manager import SurugaSeikiController
+    from app.mock_controller import MockSurugaSeikiController
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,7 @@ class ProfileMeasurementTaskExecutor(BaseTaskExecutor):
     """Task executor for profile measurement operations."""
 
     async def execute_operation(
-        self, task: Task, request: ProfileMeasurementRequest, controller: SurugaSeikiController
+        self, task: Task, request: ProfileMeasurementRequest, controller: "SurugaSeikiController | MockSurugaSeikiController"
     ) -> dict[str, Any]:
         """Execute profile measurement operation with cancellation support.
 
