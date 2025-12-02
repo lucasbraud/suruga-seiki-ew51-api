@@ -5,16 +5,20 @@ FastAPI application providing REST and WebSocket interfaces for probe station co
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from datetime import datetime
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-from .controller_manager import SurugaSeikiController
 from .routers import connection, servo, motion, position, alignment, profile, io, websocket, angle_adjustment
 from .config import settings
+from .factory import create_controller
+
+if TYPE_CHECKING:
+    from .controller_manager import SurugaSeikiController
+    from .mock_controller import MockSurugaSeikiController
 
 # Configure logging
 logging.basicConfig(
@@ -24,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global controller instance
-controller: Optional[SurugaSeikiController] = None
+controller: Optional["SurugaSeikiController | MockSurugaSeikiController"] = None
 # Shutdown flag to stop background tasks gracefully
 is_shutting_down = False
 
@@ -169,9 +173,8 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting Suruga Seiki EW51 Daemon...")
     logger.info(f"Default ADS address: {settings.ads_address}")
-    controller = SurugaSeikiController(
-        ads_address=settings.ads_address
-    )
+    logger.info(f"MOCK MODE: {'ENABLED' if settings.mock_mode else 'DISABLED'}")
+    controller = create_controller()
 
     # Optionally auto-connect to the machine on startup
     if settings.auto_connect_on_start:
