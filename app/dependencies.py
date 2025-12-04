@@ -3,15 +3,21 @@ FastAPI Dependencies for Suruga Seiki Controller
 Centralized dependency injection for controller access with proper error handling
 """
 import logging
-from typing import Annotated
+from typing import Annotated, Union
 from fastapi import HTTPException, Depends
 
-from .controller_manager import SurugaSeikiController
+from .config import settings
+
+# Import controller type based on MOCK_MODE to avoid .NET DLL loading in mock mode
+if settings.mock_mode:
+    from .mock_controller import MockSurugaSeikiController as ControllerClass
+else:
+    from .controller_manager import SurugaSeikiController as ControllerClass
 
 logger = logging.getLogger(__name__)
 
 
-def get_controller_dependency() -> SurugaSeikiController:
+def get_controller_dependency() -> Union[ControllerClass, "SurugaSeikiController", "MockSurugaSeikiController"]:
     """
     FastAPI dependency for accessing the global controller instance.
 
@@ -40,7 +46,7 @@ def get_controller_dependency() -> SurugaSeikiController:
     return controller
 
 
-def get_controller_optional() -> SurugaSeikiController:
+def get_controller_optional() -> Union[ControllerClass, "SurugaSeikiController", "MockSurugaSeikiController"]:
     """
     FastAPI dependency for accessing controller without connection check.
     Use this for endpoints that need to work even when disconnected (e.g., /connect, /status).
@@ -64,5 +70,5 @@ def get_controller_optional() -> SurugaSeikiController:
 
 
 # Type aliases for clean endpoint signatures
-ControllerDep = Annotated[SurugaSeikiController, Depends(get_controller_dependency)]
-ControllerOptionalDep = Annotated[SurugaSeikiController, Depends(get_controller_optional)]
+ControllerDep = Annotated[ControllerClass, Depends(get_controller_dependency)]
+ControllerOptionalDep = Annotated[ControllerClass, Depends(get_controller_optional)]

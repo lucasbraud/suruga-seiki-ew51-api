@@ -21,6 +21,10 @@ class DaemonSettings(BaseSettings):
         default="5.146.68.190.1.1",
         description="ADS address of the probe station (format: x.x.x.x.x.x)"
     )
+    mock_mode: bool = Field(
+        default=False,
+        description="Enable mock mode for development without physical hardware"
+    )
 
     # Server settings
     host: str = Field(default="0.0.0.0", description="Server host")
