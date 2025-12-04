@@ -452,7 +452,7 @@ class SurugaSeikiController:
 
             # Wait for movement to complete
             time.sleep(0.1)  # Initial delay to allow movement to start
-            timeout = 60  # 60 seconds timeout
+            timeout = 120  # 120 seconds timeout
             start_time = time.time()
 
             while True:
@@ -501,7 +501,7 @@ class SurugaSeikiController:
 
             # Wait for movement to complete
             time.sleep(0.1)  # Initial delay to allow movement to start
-            timeout = 60  # 60 seconds timeout
+            timeout = 120  # 120 seconds timeout
             start_time = time.time()
 
             while True:
@@ -616,7 +616,7 @@ class SurugaSeikiController:
                     })
 
                 time.sleep(0.1)  # Initial delay
-                timeout = 60
+                timeout = 120
                 start_time = time.time()
 
                 while True:
@@ -771,7 +771,7 @@ class SurugaSeikiController:
                     })
 
                 time.sleep(0.1)  # Initial delay
-                timeout = 60
+                timeout = 120
                 start_time = time.time()
 
                 while True:
@@ -907,7 +907,7 @@ class SurugaSeikiController:
             logger.error(f"Error getting position for axis {axis_number}: {e}")
             return None
 
-    def wait_for_axis_stop(self, axis_number: int, timeout: float = 60.0) -> bool:
+    def wait_for_axis_stop(self, axis_number: int, timeout: float = 120.0) -> bool:
         """
         Wait for axis to stop moving.
 
@@ -2468,7 +2468,7 @@ class SurugaSeikiController:
             logger.info(f"Status AFTER Start(): status={post_start_status}, phase={post_start_phase}")
 
             # Wait for completion
-            timeout = 60  # 60 seconds timeout
+            timeout = 120  # 120 seconds timeout
             poll_interval = 0.1
             start_wait_time = time.time()
 
@@ -2764,7 +2764,7 @@ class SurugaSeikiController:
                     })
 
                 # Wait for completion with cancellation support
-                timeout = 60
+                timeout = 120
                 poll_interval = 0.1
                 start_wait_time = time.time()
                 last_phase = None
