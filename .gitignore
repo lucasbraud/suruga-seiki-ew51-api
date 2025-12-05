@@ -37,3 +37,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated plots and alignment data
+alignment_plots/
+*.png

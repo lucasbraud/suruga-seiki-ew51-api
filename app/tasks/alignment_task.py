@@ -89,18 +89,34 @@ class AlignmentTaskExecutor(BaseTaskExecutor):
         if alignment_type == "focus" and result.peak_position_z is not None:
             result_dict["peak_position_z"] = result.peak_position_z
 
-        # Include profile data counts if available
+        # Include profile data counts and actual profile data if available
         if result.field_search_profile:
             result_dict["field_search_profile_points"] = len(result.field_search_profile)
+            result_dict["field_search_profile"] = [
+                {"position": p.position, "signal": p.signal}
+                for p in result.field_search_profile
+            ]
 
         if result.peak_search_x_profile:
             result_dict["peak_search_x_profile_points"] = len(result.peak_search_x_profile)
+            result_dict["peak_search_x_profile"] = [
+                {"position": p.position, "signal": p.signal}
+                for p in result.peak_search_x_profile
+            ]
 
         if result.peak_search_y_profile:
             result_dict["peak_search_y_profile_points"] = len(result.peak_search_y_profile)
+            result_dict["peak_search_y_profile"] = [
+                {"position": p.position, "signal": p.signal}
+                for p in result.peak_search_y_profile
+            ]
 
         if alignment_type == "focus" and result.peak_search_z_profile:
             result_dict["peak_search_z_profile_points"] = len(result.peak_search_z_profile)
+            result_dict["peak_search_z_profile"] = [
+                {"position": p.position, "signal": p.signal}
+                for p in result.peak_search_z_profile
+            ]
 
         # Check if operation was successful
         if not result.success:

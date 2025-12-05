@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 import numpy as np
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 BASE_URL = "http://localhost:8003"
 
@@ -65,10 +66,10 @@ async def set_servo_batch(client: httpx.AsyncClient, axes: list, state: bool) ->
 async def get_power_reading(client: httpx.AsyncClient, pm_ch: int = 1) -> Optional[float]:
     """Get current power reading from power meter."""
     try:
-        resp = await client.get(f"/power/reading", params={"channel": pm_ch})
+        resp = await client.get("/alignment/power", params={"channel": pm_ch})
         if resp.status_code == 200:
             data = resp.json()
-            power_dbm = data.get("power_dbm")
+            power_dbm = data.get("value_dbm")
             return power_dbm
         else:
             print(f"  ⚠ Power reading failed: {resp.status_code}")
@@ -106,7 +107,7 @@ async def start_flat_alignment_async(
     # Search parameters with defaults from FlatAlignmentRequest
     search_range_x: float = 15.0,
     search_range_y: float = 10.0,
-    peak_search_threshold: float = 10.0,
+    peak_search_threshold: float = 5.0,
     field_search_speed_x: float = 100.0,
     field_search_speed_y: float = 100.0,
     peak_search_speed_x: float = 10.0,
@@ -190,6 +191,174 @@ async def cancel_alignment_task(client: httpx.AsyncClient, task_id: str, control
         print(f"  ✗ Cancel request failed: {resp.status_code} {resp.text}")
 
 
+def plot_alignment_results(result: Dict[str, Any], stage_name: str, save_dir: Optional[Path] = None):
+    """
+    Plot the three alignment profile graphs (field search, peak search X, peak search Y).
+
+    Args:
+        result: Alignment result dictionary from API
+        stage_name: Name of the stage (e.g., "RIGHT", "LEFT")
+        save_dir: Optional directory to save plots
+    """
+    if result is None or not result.get('success', False):
+        print(f"  ⚠ No valid data to plot for {stage_name} stage")
+        return
+
+    def filter_zeros(positions, signals):
+        """Remove trailing zeros from signal data."""
+        if not signals:
+            return [], []
+
+        # Find last non-zero signal index
+        last_valid_index = len(signals) - 1
+        for i in range(len(signals) - 1, -1, -1):
+            if signals[i] != 0.0:
+                last_valid_index = i
+                break
+
+        return positions[:last_valid_index + 1], signals[:last_valid_index + 1]
+
+    try:
+        # Create figure with two subplots (X and Y peak search only)
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+
+        # Color scheme
+        colors = {'peakx': 'red', 'peaky': 'green'}
+
+        # ========================================================================
+        # Plot 1: Peak Search X Profile
+        # ========================================================================
+        peak_search_x = result.get('peak_search_x_profile', [])
+        peak_x = result.get('peak_position_x')
+
+        if peak_search_x:
+            positions = [p['position'] for p in peak_search_x]
+            signals = [p['signal'] for p in peak_search_x]
+
+            # Filter out trailing zeros
+            positions, signals = filter_zeros(positions, signals)
+
+            axes[0].plot(positions, signals, color=colors['peakx'], linewidth=1.5, alpha=0.8,
+                        label='X-axis scan')
+
+            # Mark peak position if available
+            if peak_x is not None:
+                # Find peak value (approximate from data)
+                peak_value = max(signals) if signals else 0
+                axes[0].plot(peak_x, peak_value, 'o', color=colors['peakx'],
+                            markersize=12, markeredgecolor='black', markeredgewidth=1.5,
+                            label=f'Peak: {peak_x:.3f} µm', zorder=5)
+                axes[0].axvline(x=peak_x, color=colors['peakx'], linestyle='--',
+                              alpha=0.5, linewidth=1.5)
+
+            # Set x-axis to actual data range with small margin
+            if positions:
+                pos_min, pos_max = min(positions), max(positions)
+                margin = (pos_max - pos_min) * 0.05
+                axes[0].set_xlim(pos_min - margin, pos_max + margin)
+
+            axes[0].set_title('X-Axis Peak Search Profile', fontsize=12, fontweight='bold')
+            axes[0].set_ylabel('Signal (V)', fontsize=11)
+            axes[0].legend(fontsize=10, loc='best')
+            axes[0].grid(True, alpha=0.3, linestyle='--')
+
+            # Add statistics
+            if signals:
+                max_signal = max(signals)
+                axes[0].text(0.02, 0.98, f'Points: {len(positions)}\nMax signal: {max_signal:.6f}',
+                            transform=axes[0].transAxes, fontsize=9,
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.7))
+        else:
+            axes[0].text(0.5, 0.5, 'No peak search X data available',
+                        transform=axes[0].transAxes, ha='center', va='center',
+                        fontsize=12, color='red')
+            axes[0].set_title('X-Axis Peak Search Profile', fontsize=12, fontweight='bold')
+
+        # ========================================================================
+        # Plot 2: Peak Search Y Profile
+        # ========================================================================
+        peak_search_y = result.get('peak_search_y_profile', [])
+        peak_y = result.get('peak_position_y')
+
+        if peak_search_y:
+            positions = [p['position'] for p in peak_search_y]
+            signals = [p['signal'] for p in peak_search_y]
+
+            # Filter out trailing zeros
+            positions, signals = filter_zeros(positions, signals)
+
+            axes[1].plot(positions, signals, color=colors['peaky'], linewidth=1.5, alpha=0.8,
+                        label='Y-axis scan')
+
+            # Mark peak position if available
+            if peak_y is not None:
+                # Find peak value (approximate from data)
+                peak_value = max(signals) if signals else 0
+                axes[1].plot(peak_y, peak_value, 'o', color=colors['peaky'],
+                            markersize=12, markeredgecolor='black', markeredgewidth=1.5,
+                            label=f'Peak: {peak_y:.3f} µm', zorder=5)
+                axes[1].axvline(x=peak_y, color=colors['peaky'], linestyle='--',
+                              alpha=0.5, linewidth=1.5)
+
+            # Set x-axis to actual data range with small margin
+            if positions:
+                pos_min, pos_max = min(positions), max(positions)
+                margin = (pos_max - pos_min) * 0.05
+                axes[1].set_xlim(pos_min - margin, pos_max + margin)
+
+            axes[1].set_title('Y-Axis Peak Search Profile', fontsize=12, fontweight='bold')
+            axes[1].set_xlabel('Position (µm)', fontsize=11, fontweight='bold')
+            axes[1].set_ylabel('Signal (V)', fontsize=11)
+            axes[1].legend(fontsize=10, loc='best')
+            axes[1].grid(True, alpha=0.3, linestyle='--')
+
+            # Add statistics
+            if signals:
+                max_signal = max(signals)
+                axes[1].text(0.02, 0.98, f'Points: {len(positions)}\nMax signal: {max_signal:.6f}',
+                            transform=axes[1].transAxes, fontsize=9,
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.7))
+        else:
+            axes[1].text(0.5, 0.5, 'No peak search Y data available',
+                        transform=axes[1].transAxes, ha='center', va='center',
+                        fontsize=12, color='red')
+            axes[1].set_title('Y-Axis Peak Search Profile', fontsize=12, fontweight='bold')
+            axes[1].set_xlabel('Position (µm)', fontsize=11, fontweight='bold')
+
+        # ========================================================================
+        # Overall figure title with summary
+        # ========================================================================
+        initial_power = result.get('initial_power')
+        final_power = result.get('final_power')
+        power_improvement = result.get('power_improvement')
+
+        title_text = f"{stage_name} Stage - Flat Alignment Profile Results\n"
+        if initial_power is not None and final_power is not None:
+            title_text += f"Power: {initial_power:.3f} → {final_power:.3f} dBm "
+            title_text += f"(Improvement: {power_improvement:+.3f} dB)"
+
+        fig.suptitle(title_text, fontsize=14, fontweight='bold')
+
+        plt.tight_layout(rect=[0, 0, 1, 0.97])  # Leave room for suptitle
+
+        # Save if directory provided
+        if save_dir:
+            save_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = save_dir / f"alignment_{stage_name.lower()}_{timestamp}.png"
+            plt.savefig(filename, dpi=300, bbox_inches='tight')
+            print(f"  ✓ Plot saved to: {filename}")
+
+        # Show plot (non-blocking)
+        plt.show(block=False)
+        plt.pause(0.1)
+
+    except Exception as e:
+        print(f"  ✗ Failed to plot alignment results: {e}")
+
+
 
 async def test_flat_alignment_basic(client: httpx.AsyncClient, stage_config: Dict[str, Any]) -> None:
     """Test: Basic flat alignment execution and completion for a single stage."""
@@ -215,12 +384,16 @@ async def test_flat_alignment_basic(client: httpx.AsyncClient, stage_config: Dic
             print("\n[4] ✓ Alignment completed successfully!")
             result = status_data.get("result", {})
             print(f"  Result data: {result}")
+
+            # Plot alignment results
+            print("\n[5] Plotting alignment results...")
+            plot_alignment_results(result, stage_config['name'])
         else:
             print(f"  ✗ Alignment did not complete: {status_data.get('status')}")
             if status_data.get("error"):
                 print(f"    Error: {status_data['error']}")
     finally:
-        print(f"\n[5] Disabling all servos...")
+        print(f"\n[6] Disabling all servos...")
         await set_servo_batch(client, ALL_AXES, False)
 
     print()
@@ -259,6 +432,11 @@ async def test_sequential_alignment_both_stages(client: httpx.AsyncClient) -> No
             print("\n[1.3] ✓ RIGHT stage alignment completed successfully!")
             result = right_status.get("result", {})
             print(f"  Result data: {result}")
+
+            # Plot RIGHT stage results
+            print("\n[1.4] Plotting RIGHT stage alignment results...")
+            save_dir = Path("alignment_plots")
+            plot_alignment_results(result, RIGHT_STAGE['name'], save_dir=save_dir)
         else:
             print(f"  ✗ RIGHT stage alignment failed: {right_status.get('status')}")
             if right_status.get("error"):
@@ -282,6 +460,11 @@ async def test_sequential_alignment_both_stages(client: httpx.AsyncClient) -> No
             print("\n[2.3] ✓ LEFT stage alignment completed successfully!")
             result = left_status.get("result", {})
             print(f"  Result data: {result}")
+
+            # Plot LEFT stage results
+            print("\n[2.4] Plotting LEFT stage alignment results...")
+            save_dir = Path("alignment_plots")
+            plot_alignment_results(result, LEFT_STAGE['name'], save_dir=save_dir)
         else:
             print(f"  ✗ LEFT stage alignment failed: {left_status.get('status')}")
             if left_status.get("error"):
@@ -330,12 +513,16 @@ async def test_flat_alignment_with_power_meter(client: httpx.AsyncClient, stage_
                 print(f"  Progress info: {progress.get('message', 'N/A')}")
             if result:
                 print(f"  Result data: {result}")
+
+            # Plot alignment results
+            print("\n[5] Plotting alignment results...")
+            plot_alignment_results(result, stage_config['name'])
         else:
             print(f"  ✗ Alignment did not complete: {status_data.get('status')}")
             if status_data.get("error"):
                 print(f"    Error: {status_data['error']}")
     finally:
-        print(f"\n[5] Disabling all servos...")
+        print(f"\n[6] Disabling all servos...")
         await set_servo_batch(client, ALL_AXES, False)
 
     print()
@@ -408,47 +595,47 @@ async def main() -> None:
             print("Skipping Test 1\n")
 
         # Test 2: Single stage alignment with custom wavelength
-        user_input = input("Run TEST 2: Single stage with custom wavelength (1310 nm)? (yes/no): ")
-        if user_input.lower() == "yes":
-            stage_choice = input("  Which stage? (right/left): ").strip().lower()
-            if stage_choice == "right":
-                await test_flat_alignment_with_power_meter(client, RIGHT_STAGE)
-            elif stage_choice == "left":
-                await test_flat_alignment_with_power_meter(client, LEFT_STAGE)
-            else:
-                print("  Invalid choice, skipping test\n")
-        else:
-            print("Skipping Test 2\n")
+        # user_input = input("Run TEST 2: Single stage with custom wavelength (1310 nm)? (yes/no): ")
+        # if user_input.lower() == "yes":
+        #     stage_choice = input("  Which stage? (right/left): ").strip().lower()
+        #     if stage_choice == "right":
+        #         await test_flat_alignment_with_power_meter(client, RIGHT_STAGE)
+        #     elif stage_choice == "left":
+        #         await test_flat_alignment_with_power_meter(client, LEFT_STAGE)
+        #     else:
+        #         print("  Invalid choice, skipping test\n")
+        # else:
+        #     print("Skipping Test 2\n")
 
-        # Test 3: Basic single stage alignment
-        user_input = input("Run TEST 3: Basic single stage alignment? (yes/no): ")
-        if user_input.lower() == "yes":
-            stage_choice = input("  Which stage? (right/left): ").strip().lower()
-            if stage_choice == "right":
-                await test_flat_alignment_basic(client, RIGHT_STAGE)
-            elif stage_choice == "left":
-                await test_flat_alignment_basic(client, LEFT_STAGE)
-            else:
-                print("  Invalid choice, skipping test\n")
-        else:
-            print("Skipping Test 3\n")
+        # # Test 3: Basic single stage alignment
+        # user_input = input("Run TEST 3: Basic single stage alignment? (yes/no): ")
+        # if user_input.lower() == "yes":
+        #     stage_choice = input("  Which stage? (right/left): ").strip().lower()
+        #     if stage_choice == "right":
+        #         await test_flat_alignment_basic(client, RIGHT_STAGE)
+        #     elif stage_choice == "left":
+        #         await test_flat_alignment_basic(client, LEFT_STAGE)
+        #     else:
+        #         print("  Invalid choice, skipping test\n")
+        # else:
+        #     print("Skipping Test 3\n")
 
-        # Test 4: Cancellation test
-        user_input = input("Run TEST 4: Flat alignment cancellation? (yes/no): ")
-        if user_input.lower() == "yes":
-            stage_choice = input("  Which stage? (right/left): ").strip().lower()
-            if stage_choice == "right":
-                await test_flat_alignment_cancellation(client, RIGHT_STAGE)
-            elif stage_choice == "left":
-                await test_flat_alignment_cancellation(client, LEFT_STAGE)
-            else:
-                print("  Invalid choice, skipping test\n")
-        else:
-            print("Skipping Test 4\n")
+        # # Test 4: Cancellation test
+        # user_input = input("Run TEST 4: Flat alignment cancellation? (yes/no): ")
+        # if user_input.lower() == "yes":
+        #     stage_choice = input("  Which stage? (right/left): ").strip().lower()
+        #     if stage_choice == "right":
+        #         await test_flat_alignment_cancellation(client, RIGHT_STAGE)
+        #     elif stage_choice == "left":
+        #         await test_flat_alignment_cancellation(client, LEFT_STAGE)
+        #     else:
+        #         print("  Invalid choice, skipping test\n")
+        # else:
+        #     print("Skipping Test 4\n")
 
-        print("=" * 70)
-        print("All selected tests completed!")
-        print("=" * 70)
+        # print("=" * 70)
+        # print("All selected tests completed!")
+        # print("=" * 70)
 
 
 if __name__ == "__main__":
