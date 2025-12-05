@@ -413,14 +413,14 @@ class FlatAlignmentRequest(BaseModel):
     wavelength: int = Field(1310, gt=0, description="Measurement wavelength in nm (e.g., 1310, 1550)")
     pmAutoRangeUpOn: bool = Field(True, description="Enable power meter auto-range up")
     pmInitRangeSettingOn: bool = Field(True, description="Enable initial range setting")
-    pmInitRange: int = Field(-40, description="Initial power meter range in dBm")
+    pmInitRange: int = Field(-30, description="Initial power meter range in dBm")
 
     # Search thresholds
-    fieldSearchThreshold: float = Field(0.1, ge=0, description="Field search threshold")
+    fieldSearchThreshold: float = Field(0.0, ge=0, description="Field search threshold")
     peakSearchThreshold: float = Field(10.0, ge=0, le=99.99, description="Peak search threshold in %")
 
     # Search ranges
-    searchRangeX: float = Field(10.0, gt=0, description="X-axis search range in µm")
+    searchRangeX: float = Field(15.0, gt=0, description="X-axis search range in µm")
     searchRangeY: float = Field(10.0, gt=0, description="Y-axis search range in µm")
 
     # Field search parameters
@@ -431,8 +431,8 @@ class FlatAlignmentRequest(BaseModel):
     fieldSearchSpeedY: float = Field(100.0, gt=0, description="Y-axis field search speed in µm/s")
 
     # Peak search parameters
-    peakSearchSpeedX: float = Field(5.0, gt=0, description="X-axis peak search speed in µm/s")
-    peakSearchSpeedY: float = Field(5.0, gt=0, description="Y-axis peak search speed in µm/s")
+    peakSearchSpeedX: float = Field(10.0, gt=0, description="X-axis peak search speed in µm/s")
+    peakSearchSpeedY: float = Field(10.0, gt=0, description="Y-axis peak search speed in µm/s")
 
     # Smoothing parameters
     smoothingRangeX: int = Field(40, ge=0, description="X-axis smoothing range in samples")

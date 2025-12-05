@@ -33,7 +33,10 @@ from .models import (
     AngleAdjustmentRequest,
     AngleAdjustmentResponse,
     AngleAdjustmentStatus,
-    AdjustingStatus
+    AdjustingStatus,
+    FlatAlignmentRequest,
+    FocusAlignmentRequest,
+    AlignmentResponse
 )
 
 logger = logging.getLogger(__name__)
@@ -1759,8 +1762,8 @@ class SurugaSeikiController:
 
     def execute_flat_alignment(
         self,
-        request
-    ):
+        request: FlatAlignmentRequest
+    ) -> Optional[AlignmentResponse]:
         """
         Execute flat (2D) optical alignment.
 
@@ -1772,9 +1775,9 @@ class SurugaSeikiController:
             request: FlatAlignmentRequest with all ~30 parameters
 
         Returns:
-            AlignmentResponse with success status, optical power, peak positions, and profile data
+            AlignmentResponse with success status, optical power, peak positions, and profile data,
+            or None if error
         """
-        from .models import AlignmentResponse, FlatAlignmentRequest
 
         if not self.is_connected() or self._alignment is None:
             logger.error("Not connected or Alignment not initialized")
@@ -2055,8 +2058,8 @@ class SurugaSeikiController:
 
     def execute_focus_alignment(
         self,
-        request
-    ):
+        request: FocusAlignmentRequest
+    ) -> Optional[AlignmentResponse]:
         """
         Execute focus (3D) optical alignment with Z-axis optimization.
 
@@ -2068,9 +2071,9 @@ class SurugaSeikiController:
             request: FocusAlignmentRequest with all ~31 parameters (including zMode)
 
         Returns:
-            AlignmentResponse with success status, optical power, peak positions (X,Y,Z), and profile data
+            AlignmentResponse with success status, optical power, peak positions (X,Y,Z), and profile data,
+            or None if error
         """
-        from .models import AlignmentResponse, FocusAlignmentRequest
 
         if not self.is_connected() or self._alignment is None:
             logger.error("Not connected or Alignment not initialized")
@@ -2944,10 +2947,10 @@ class SurugaSeikiController:
 
     async def execute_flat_alignment_async(
         self,
-        request,
+        request: FlatAlignmentRequest,
         cancellation_event: Optional[asyncio.Event] = None,
         progress_callback: Optional[Callable[[dict], None]] = None
-    ):
+    ) -> Optional[AlignmentResponse]:
         """
         Async wrapper for execute_flat_alignment with cancellation and progress support.
 
@@ -2962,9 +2965,8 @@ class SurugaSeikiController:
         Raises:
             Exception: If alignment fails or is cancelled
         """
-        def sync_execution():
+        def sync_execution() -> Optional[AlignmentResponse]:
             """Synchronous execution in thread pool."""
-            from .models import AlignmentResponse
 
             if not self.is_connected() or self._alignment is None:
                 raise Exception("Not connected or Alignment not initialized")
@@ -3138,10 +3140,10 @@ class SurugaSeikiController:
 
     async def execute_focus_alignment_async(
         self,
-        request,
+        request: FocusAlignmentRequest,
         cancellation_event: Optional[asyncio.Event] = None,
         progress_callback: Optional[Callable[[dict], None]] = None
-    ):
+    ) -> Optional[AlignmentResponse]:
         """
         Async wrapper for execute_focus_alignment with cancellation and progress support.
 
@@ -3156,9 +3158,8 @@ class SurugaSeikiController:
         Raises:
             Exception: If alignment fails or is cancelled
         """
-        def sync_execution():
+        def sync_execution() -> Optional[AlignmentResponse]:
             """Synchronous execution in thread pool."""
-            from .models import AlignmentResponse
 
             if not self.is_connected() or self._alignment is None:
                 raise Exception("Not connected or Alignment not initialized")
