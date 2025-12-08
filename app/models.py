@@ -472,7 +472,7 @@ class FocusAlignmentRequest(BaseModel):
     wavelength: int = Field(1310, gt=0, description="Measurement wavelength in nm (e.g., 1310, 1550)")
     pmAutoRangeUpOn: bool = Field(True, description="Enable power meter auto-range up")
     pmInitRangeSettingOn: bool = Field(True, description="Enable initial range setting")
-    pmInitRange: int = Field(-10, description="Initial power meter range in dBm")
+    pmInitRange: int = Field(-30, description="Initial power meter range in dBm")
 
     # Search thresholds
     fieldSearchThreshold: float = Field(0.1, ge=0, description="Field search threshold")
