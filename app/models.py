@@ -726,7 +726,7 @@ class AngleAdjustmentRequest(BaseModel):
     lock_unlock_difference: float = Field(default=0.0, ge=0, description="Lock/unlock difference threshold")
 
     # Contact detection parameters
-    contact_search_range: float = Field(default=1000.0, gt=0, description="Contact search range in µm")
+    contact_search_range: float = Field(default=5000.0, gt=0, description="Contact search range in µm")
     contact_search_speed: float = Field(default=100.0, gt=0, description="Contact search speed in µm/s")
     contact_smoothing: int = Field(default=10, ge=0, description="Contact smoothing samples")
     contact_sensitivity: int = Field(default=5, ge=0, description="Contact sensitivity")
