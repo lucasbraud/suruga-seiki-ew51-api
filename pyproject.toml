@@ -3,7 +3,7 @@ name = "suruga-seiki-ew51-api"
 version = "1.0.0"
 description = "FastAPI server for Suruga Seiki EW51 probe station control"
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = "==3.11.9,<4.0"
 dependencies = [
     "fastapi[standard]>=0.109.0",
     "websockets>=12.0",
